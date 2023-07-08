@@ -2,11 +2,13 @@ package geecache
 
 import (
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"project_cache/geecache/consistenthash"
+	pb "project_cache/geecache/geecachepb"
 	"strings"
 	"sync"
 )
@@ -23,33 +25,64 @@ type httpClient struct {
 }
 
 // PeerGet 客户端有各自的baseURL，
-func (hg *httpClient) PeerGet(group, key string) ([]byte, error) {
+func (hg *httpClient) PeerGet(in *pb.Request, out *pb.Response) error {
 
 	u := fmt.Sprintf("%v%v/%v",
-		hg.baseURL,             // 表示将要访问的远程节点的地址，例如 http://example.com/_geecache/
-		url.QueryEscape(group), // QueryEscape函数对传入参数进行转码使之可以安全的用在URL查询里。
-		url.QueryEscape(key))
+		hg.baseURL,                     // 表示将要访问的远程节点的地址，例如 http://example.com/_geecache/
+		url.QueryEscape(in.GetGroup()), // QueryEscape函数对传入参数进行转码使之可以安全的用在URL查询里。
+		url.QueryEscape(in.GetKey()))
 
 	resp, err := http.Get(u)
 	if err != nil {
 		log.Printf("请求%v时发生错误：%v", u, err.Error())
-		return nil, err
+		return err
 	} else {
 		log.Printf("请求%v时，节点在开启", u)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("server returned: %v", resp.Status)
+		return fmt.Errorf("server returned: %v", resp.Status)
 	}
 
 	bytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %v", err)
+		return fmt.Errorf("reading response body: %v", err)
+	}
+	if err = proto.Unmarshal(bytes, out); err != nil {
+		return fmt.Errorf("decoding response body: %v", err)
 	}
 
-	return bytes, nil
+	return nil
 }
+
+//func (hg *httpClient) PeerGet(group, key string) ([]byte, error) {
+//
+//	u := fmt.Sprintf("%v%v/%v",
+//		hg.baseURL,             // 表示将要访问的远程节点的地址，例如 http://example.com/_geecache/
+//		url.QueryEscape(group), // QueryEscape函数对传入参数进行转码使之可以安全的用在URL查询里。
+//		url.QueryEscape(key))
+//
+//	resp, err := http.Get(u)
+//	if err != nil {
+//		log.Printf("请求%v时发生错误：%v", u, err.Error())
+//		return nil, err
+//	} else {
+//		log.Printf("请求%v时，节点在开启", u)
+//	}
+//	defer resp.Body.Close()
+//
+//	if resp.StatusCode != 200 {
+//		return nil, fmt.Errorf("server returned: %v", resp.Status)
+//	}
+//
+//	bytes, err := io.ReadAll(resp.Body)
+//	if err != nil {
+//		return nil, fmt.Errorf("reading response body: %v", err)
+//	}
+//
+//	return bytes, nil
+//}
 
 type HTTPPool struct {
 	self     string // 用来记录自己的地址，包括 主机名/IP 和 端口
@@ -106,8 +139,15 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	body, err := proto.Marshal(&pb.Response{Value: view.ByteSlice()})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(view.ByteSlice())
+	w.Write(body)
 }
 
 // SetPeers 实例化了一致性哈希算法，并且添加了传入的节点。

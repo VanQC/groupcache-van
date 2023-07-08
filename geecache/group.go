@@ -3,6 +3,7 @@ package geecache
 import (
 	"bytes"
 	"log"
+	pb "project_cache/geecache/geecachepb"
 	"project_cache/geecache/singleflight"
 	"sync"
 )
@@ -117,12 +118,25 @@ func (g *Group) load(key string) (ByteView, error) {
 
 // 访问远程节点，获取缓存值
 func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	if btView, err := peer.PeerGet(g.name, key); err == nil {
-		return ByteView{b: btView}, nil
-	} else {
+	request := &pb.Request{
+		Group: g.name,
+		Key:   key,
+	}
+	response := &pb.Response{}
+	if err := peer.PeerGet(request, response); err != nil {
 		return ByteView{}, err
+	} else {
+		return ByteView{b: response.Value}, nil
 	}
 }
+
+//func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+//	if btView, err := peer.PeerGet(g.name, key); err == nil {
+//		return ByteView{b: btView}, nil
+//	} else {
+//		return ByteView{}, err
+//	}
+//}
 
 // 调用回调函数 g.getter.Get() 从其他地方获取源数据，
 // 并将源数据添加到缓存 mainCache 中（通过 populateCache 方法）

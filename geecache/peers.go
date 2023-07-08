@@ -1,5 +1,7 @@
 package geecache
 
+import pb "project_cache/geecache/geecachepb"
+
 // 根据传入的 key 选择相应节点 PeerGetter。
 type PeerPicker interface {
 	PickPeer(key string) (PeerGetter, bool)
@@ -17,5 +19,9 @@ type PeerPicker interface {
 
 // 用于从对应 group 查找缓存值。PeerGetter 就对应于上述流程中的 HTTP 客户端。
 type PeerGetter interface {
-	PeerGet(group, key string) ([]byte, error)
+	PeerGet(in *pb.Request, out *pb.Response) error
 }
+
+//type PeerGetter interface {
+//	PeerGet(group, key string) ([]byte, error)
+//}
