@@ -2,9 +2,9 @@ package geecache
 
 import (
 	"bytes"
+	pb "geecache/geecachepb"
+	"geecache/singleflight"
 	"log"
-	pb "project_cache/geecache/geecachepb"
-	"project_cache/geecache/singleflight"
 	"sync"
 )
 
@@ -37,9 +37,23 @@ func (f GetterFunc) Get(key string) ([]byte, error) {
 type Group struct {
 	name      string
 	getter    Getter // 回调函数
-	mainCache cache  // 缓存
+	peersOnce sync.Once
 	peers     PeerPicker
-	loader    *singleflight.Set // 保证并发时相同请求只请求一次，返回相同结果
+
+	cacheBytes int64 // limit for sum of mainCache and hotCache size
+
+	// mainCache 是此进程（在其对等方中）具有权威性的键的缓存。
+	// 不同数据的key根据一致性哈希原理，是分布在不同的节点上的，每个节点都是一个进程，
+	// 也就是说节点的 mainCache 中只保存一致性哈希分配到自己的数据
+	mainCache cache
+
+	// hotCache 包含此对等节点不具有权威性的键值（否则它们将位于 mainCache 中），
+	// 但足够流行，可以保证在此过程中进行镜像，以避免总是通过网络请求从对等方获取。
+	// 拥有热缓存可避免网络热点，其中对等节点的网卡可能成为 热点数据 的瓶颈。
+	// 此缓存谨慎使用，以最大化可全局存储的键值对总数。
+	hotCache cache
+
+	loader *singleflight.Set // 保证并发时相同请求只请求一次，返回相同结果
 }
 
 var (
@@ -54,11 +68,18 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	}
 	mu.Lock() // 防止同时修改同一条group实例（name相同的）
 	defer mu.Unlock()
+	if _, exist := groups[name]; exist {
+		panic("duplicate registration of group " + name)
+	}
 	gp := &Group{
-		name:      name,
-		getter:    getter,
-		mainCache: cache{cacheBytes: cacheBytes}, // 此处不用实例化lru，因为采用延迟初始化。
-		loader:    &singleflight.Set{},
+		name:       name,
+		getter:     getter,
+		cacheBytes: cacheBytes,
+
+		// peers 通过调用 Get() 方法时执行一次
+		// mainCache 延迟实例化
+
+		loader: &singleflight.Set{},
 	}
 	groups[name] = gp
 	return gp
@@ -67,27 +88,26 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 // GetGroup 根据名称返回对应的group结构体
 func GetGroup(name string) *Group {
 	mu.RLock()
-	defer mu.RUnlock()
-	if v, ok := groups[name]; ok {
-		return v
-	}
-	return nil
+	g := groups[name]
+	mu.RUnlock()
+	return g
 }
 
-// RegisterPeersPicker 将实现了 PeerPicker 接口的 HTTPPool 注入到 Group 中
-func (g *Group) RegisterPeersPicker(peers PeerPicker) {
-	if g.peers != nil {
-		panic("RegisterPeerPicker called more than once")
+func (g *Group) initPeers() {
+	if g.peers == nil {
+		g.peers = getPeerPicker()
 	}
-	g.peers = peers
 }
 
-// QueryCache 根据key从 mainCache 中查找缓存，若存在则返回缓存值，若不存在，则调用 load 方法从外部查询key
-func (g *Group) QueryCache(key string) (ByteView, error) {
+// Query 根据key从 mainCache 中查找缓存，若存在则返回缓存值，若不存在，则调用 load 方法从外部查询key
+func (g *Group) Query(key string) (ByteView, error) {
+	// 初始化 group 的远程节点
+	g.peersOnce.Do(g.initPeers)
+
 	if key == "" {
 		return ByteView{}, nil
 	}
-	if byteView, ok := g.mainCache.get(key); ok {
+	if byteView, cacheHit := g.lookupCache(key); cacheHit {
 		log.Println("cache hit")
 		return byteView, nil
 	}
@@ -97,46 +117,61 @@ func (g *Group) QueryCache(key string) (ByteView, error) {
 
 // 从外部查询 key
 func (g *Group) load(key string) (ByteView, error) {
+	// 防止缓存击穿。并发查询请求只执行一次
 	// 确保了并发场景下针对相同的 key，load 过程只会调用一次
 	btView, err := g.loader.Do(key, func() (interface{}, error) {
-		if g.peers != nil { // 存在远程节点
-			if peerGetter, ok := g.peers.PickPeer(key); ok {
-				if value, err := g.getFromPeer(peerGetter, key); err == nil {
+		// 再次查缓存
+		if value, cacheHit := g.lookupCache(key); cacheHit {
+			return value, nil
+		}
+		// 查远程节点，若存在的话。
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				log.Println("cache not hit, get from peer")
+				if value, err := g.getFromPeer(peer, key); err == nil {
+					log.Println("从远程节点成功获取数据")
 					return value, nil
 				}
 			}
 		}
+		// 查本地
 		return g.queryLocally(key)
 	})
 	if err == nil {
 		return btView.(ByteView), nil
 	}
-
 	return ByteView{}, err
-	//return btView.(ByteView), err
+}
+
+// 从两个缓存中查找
+func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
+	if g.cacheBytes <= 0 {
+		return
+	}
+	value, ok = g.mainCache.get(key)
+	if ok {
+		return
+	}
+	value, ok = g.hotCache.get(key)
+	return
 }
 
 // 访问远程节点，获取缓存值
-func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+func (g *Group) getFromPeer(peer ProtoGetter, key string) (ByteView, error) {
 	request := &pb.Request{
 		Group: g.name,
 		Key:   key,
 	}
 	response := &pb.Response{}
-	if err := peer.PeerGet(request, response); err != nil {
+	if err := peer.Get(request, response); err != nil {
 		return ByteView{}, err
-	} else {
-		return ByteView{b: response.Value}, nil
 	}
-}
+	value := ByteView{b: response.Value}
 
-//func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-//	if btView, err := peer.PeerGet(g.name, key); err == nil {
-//		return ByteView{b: btView}, nil
-//	} else {
-//		return ByteView{}, err
-//	}
-//}
+	// TODO 这里把热点数据加入hotCache 的策略有待进一步优化，这里采取每次都加入
+	g.populateCache(key, value, &g.hotCache)
+	return value, nil
+}
 
 // 调用回调函数 g.getter.Get() 从其他地方获取源数据，
 // 并将源数据添加到缓存 mainCache 中（通过 populateCache 方法）
@@ -146,11 +181,25 @@ func (g *Group) queryLocally(key string) (ByteView, error) {
 		return ByteView{}, err
 	}
 	value := ByteView{bytes.Clone(b)}
-	//g.populateCache(key,value)
-	g.mainCache.add(key, value) // 将获取到的源数据添加到缓存 mainCache 中
+	g.populateCache(key, value, &g.mainCache) // 将获取到的源数据添加到缓存 mainCache 中
 	return value, nil
 }
 
-//func (g *Group) populateCache(key string, value ByteView) {
-//	g.mainCache.add(key, value)
-//}
+// 根据传入的 cache 参数确定是 hotCache 还是 mainCache，将 key value 存入 cache 中。
+func (g *Group) populateCache(key string, value ByteView, cache *cache) {
+	if g.cacheBytes <= 0 {
+		return
+	}
+	cache.add(key, value)
+	for {
+		mainBytes, hotBytes := g.mainCache.bytes(), g.hotCache.bytes()
+		if mainBytes+hotBytes <= g.cacheBytes {
+			return
+		}
+		if hotBytes > mainBytes/8 {
+			(&g.hotCache).removeOldest()
+		} else {
+			(&g.mainCache).removeOldest()
+		}
+	}
+}

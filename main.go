@@ -3,15 +3,25 @@ package main
 import (
 	"flag"
 	"fmt"
+	"geecache"
 	"log"
 	"net/http"
-	"project_cache/geecache"
 )
 
 var db = map[string]string{
-	"Tom":  "630",
-	"Jack": "589",
-	"Sam":  "567",
+	"Tom":   "630",
+	"Jack":  "589",
+	"Sam":   "567",
+	"John":  "678",
+	"Amy":   "532",
+	"David": "612",
+	"Lisa":  "658",
+	"Eric":  "698",
+	"Kate":  "620",
+	"Mike":  "672",
+	"Sara":  "655",
+	"Ben":   "695",
+	"Alex":  "675",
 }
 
 func creatGroup() *geecache.Group {
@@ -25,11 +35,11 @@ func creatGroup() *geecache.Group {
 		}))
 }
 
-func startCacheServer(addr string, peers []string, gp *geecache.Group) {
+func startCacheServer(addr string, peers []string) {
 
-	htpPol := geecache.NewHTTPPool(addr)
+	htpPol := geecache.NewHTTPPool(addr, "", 0, nil)
 	htpPol.SetPeers(peers...)
-	gp.RegisterPeersPicker(htpPol)
+
 	log.Println("geecache is running at", addr)
 	log.Fatal(http.ListenAndServe(addr[7:], htpPol)) // 7 的意思是去掉前缀 "http://"
 }
@@ -38,7 +48,7 @@ func startAPIServer(apiAddr string, gp *geecache.Group) {
 	http.Handle("/api", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			key := r.URL.Query().Get("key")
-			view, err := gp.QueryCache(key)
+			view, err := gp.Query(key)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -71,6 +81,9 @@ func main() {
 		8001: "http://localhost:8001",
 		8002: "http://localhost:8002",
 		8003: "http://localhost:8003",
+		8004: "http://localhost:8004",
+		8005: "http://localhost:8005",
+		8006: "http://localhost:8006",
 	}
 	var addrs []string
 	for _, v := range addrMap {
@@ -80,7 +93,7 @@ func main() {
 	if api {
 		go startAPIServer(apiAddr, group)
 	}
-	startCacheServer(addrMap[port], addrs, group)
+	startCacheServer(addrMap[port], addrs)
 }
 
 // Overall flow char										     requests					        local

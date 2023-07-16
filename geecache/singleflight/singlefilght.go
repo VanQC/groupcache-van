@@ -26,6 +26,10 @@ func (s *Set) Do(key string, fn func() (interface{}, error)) (interface{}, error
 		c.wg.Wait()         // 如果请求正在进行中，则等待
 		return c.val, c.err // 请求结束，返回结果
 	}
+
+	// 当key不存在时，需要发起请求。但在发起请求前，先把key写进 Set.mp 中，再去发起请求
+	// 这样在同一时刻并发的相同请求，后面的请求会先命中key，然后等待使用第一次的请求结果
+	// 即同一时刻并发的相同请求，只有第一个请求会被执行，其余全部使用的第一个请求返回的结果。
 	c := new(call)
 	c.wg.Add(1)   // 发起请求前加锁
 	s.mp[key] = c // 添加到 s.mp，表明 key 已经有对应的请求在处理

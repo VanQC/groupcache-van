@@ -16,7 +16,7 @@ func (d date) Len() int64 {
 
 // 测试 FindNode 方法
 func TestCache_Get(t *testing.T) {
-	lru := New(int64(0), nil)
+	lru := New(0, nil)
 	da := date{"wqc", "123"}
 	lru.Add("key1", da)
 	if v, ok := lru.Get("key1"); !ok || v.(date) != da {
@@ -31,7 +31,7 @@ func TestCache_Get(t *testing.T) {
 func TestCache_RemoveOldest(t *testing.T) {
 	k1, k2, k3 := "key1", "key2", "k3"
 
-	lru := New(int64(12), nil)
+	lru := New(2, nil)
 	lru.Add(k1, date{"w", "1"})
 	lru.Add(k2, date{"q", "2"})
 	lru.Add(k3, date{"c", "3"})

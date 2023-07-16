@@ -26,13 +26,13 @@ func TestGet(t *testing.T) {
 			return nil, fmt.Errorf("%s not exist", key)
 		}))
 	for k, v := range db {
-		if btView, err := gp.Get(k); err != nil || btView.String() != v {
+		if btView, err := gp.Query(k); err != nil || btView.String() != v {
 			t.Fatalf("fail to get value of %v", k)
 		}
-		if _, err := gp.Get(k); err != nil || loadCounts[k] > 1 {
+		if _, err := gp.Query(k); err != nil || loadCounts[k] > 1 {
 			t.Fatalf("cache %s miss", k)
 		}
-		if view, err := gp.Get("unknown"); err == nil {
+		if view, err := gp.Query("unknown"); err == nil {
 			t.Fatalf("the value of unknow should be empty, but %s got", view)
 		}
 	}

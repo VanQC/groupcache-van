@@ -4,7 +4,7 @@
 // 	protoc        v4.23.4
 // source: geecachepb.proto
 
-package __
+package geecachepb
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"

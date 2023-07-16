@@ -2,9 +2,7 @@ package geecache
 
 import "bytes"
 
-/*
-	抽象了一个只读数据结构 ByteView 用来表示缓存值
-*/
+// 抽象了一个只读数据结构 ByteView 用来表示缓存值
 
 // ByteView 只读数据结构，用来表示缓存值
 type ByteView struct {
