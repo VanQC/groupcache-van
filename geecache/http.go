@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -87,6 +88,18 @@ func (p *HTTPPool) PickPeer(key string) (ProtoGetter, bool) {
 	return nil, false
 }
 
+func (p *HTTPPool) GetAll() (peers []ProtoGetter) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	peers = make([]ProtoGetter, len(p.clients))
+	i := 0
+	for _, v := range p.clients {
+		peers[i] = v
+		i++
+	}
+	return
+}
+
 /*
 	http.ListenAndServe(addr string, handler Handler) 用于实现一个服务端
 	第一个参数是服务启动的地址，第二个参数是 Handler
@@ -112,12 +125,46 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	groupName, key := parts[0], parts[1]
 	group := GetGroup(groupName) // 找到数据组
-	p.Log("解析路径成功，找到数据组group：%v", group.name)
 	if group == nil {
 		http.Error(w, "no such group: "+groupName, http.StatusNotFound)
 		return
 	}
+	p.Log("解析路径成功，找到数据组group：%v", group.name)
 
+	// 处理 Put 请求
+	if r.Method == http.MethodPut {
+		defer r.Body.Close()
+		b := bufferPool.Get().(*bytes.Buffer)
+		b.Reset()
+		defer bufferPool.Put(b)
+		if _, err := io.Copy(b, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// 反序列化请求体中的信息，获取key，value，expire等信息
+		var out pb.SetRequest
+		if err := proto.Unmarshal(b.Bytes(), &out); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var expire time.Time
+		if out.Expire != 0 {
+			expire = time.Unix(out.Expire/int64(time.Second), out.Expire%int64(time.Second))
+		}
+
+		group.localSet(out.Key, out.Value, expire, &group.mainCache)
+		return
+	}
+
+	// 处理 Delete 请求
+	if r.Method == http.MethodDelete {
+		group.localRemove(key)
+		return
+	}
+
+	// 默认处理 GET 请求
 	view, err := group.Query(key) // 查询数据组对应的缓存
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -129,7 +176,6 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/x-protobuf") // 表示响应的内容是protobuf类型的数据
 	w.Write(body)
 }
@@ -182,6 +228,55 @@ func (hg *httpClient) Get(in *pb.Request, out *pb.Response) error {
 	}
 	if err = proto.Unmarshal(b.Bytes(), out); err != nil {
 		return fmt.Errorf("decoding response body: %v", err)
+	}
+	return nil
+}
+
+func (hg *httpClient) Set(in *pb.SetRequest) error {
+	body, err := proto.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("while marshaling SetRequest body: %w", err)
+	}
+
+	u := fmt.Sprintf("%v%v/%v",
+		hg.baseURL,
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()))
+
+	req, err := http.NewRequest(http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("server returned: %v", resp.Status)
+	}
+	return nil
+}
+
+func (hg *httpClient) Remove(in *pb.Request) error {
+	u := fmt.Sprintf("%v%v/%v",
+		hg.baseURL,
+		url.QueryEscape(in.GetGroup()),
+		url.QueryEscape(in.GetKey()))
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("server returned: %v", resp.Status)
 	}
 	return nil
 }

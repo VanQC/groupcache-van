@@ -27,7 +27,7 @@ func (c *cache) add(key string, value ByteView) {
 			c.nbytes -= int64(len(key)) + val.Len()
 		})
 	}
-	c.lru.Add(key, value)
+	c.lru.Add(key, value, value.e)
 	c.nbytes += int64(len(key)) + value.Len()
 }
 
@@ -49,6 +49,14 @@ func (c *cache) removeOldest() {
 	defer c.mu.Unlock()
 	if c.lru != nil {
 		c.lru.RemoveOldest()
+	}
+}
+
+func (c *cache) remove(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lru != nil {
+		c.lru.Remove(key)
 	}
 }
 

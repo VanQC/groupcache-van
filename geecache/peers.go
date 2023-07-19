@@ -17,6 +17,9 @@ import (
 type ProtoGetter interface {
 	// Get 用于从对应 group 查找缓存值。ProtoGetter 就对应于上述流程中的 HTTP 客户端。
 	Get(in *pb.Request, out *pb.Response) error
+
+	Set(in *pb.SetRequest) error
+	Remove(in *pb.Request) error
 }
 
 // PeerPicker 接口，实现根据传入的 key 选择相应节点 ProtoGetter 的功能
@@ -24,11 +27,15 @@ type PeerPicker interface {
 	// PickPeer 返回 key 对应的节点，并返回 true，表明已指定远程peer。
 	// 如果密钥所有者是当前对等方，则返回 nil 和 false。
 	PickPeer(key string) (ProtoGetter, bool)
+
+	// GetAll returns all the peers in the group
+	GetAll() []ProtoGetter
 }
 
 type NoPeer struct{}
 
 func (NoPeer) PickPeer(string) (peer ProtoGetter, ok bool) { return }
+func (NoPeer) GetAll() (peers []ProtoGetter)               { return }
 
 // 这部分做了简化，全局共用一个http池，即意味着 HTTPPool 只需注册一次
 var portPicker PeerPicker

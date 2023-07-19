@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package geecachepb;
 
-option go_package = "./";
+option go_package = "./;geecachepb";
 
 /*
 Request 包含 2 个字段， group 和 cache，这与我们之前定义的接口 /_geecache/<group>/<name> 所需的参数吻合。
@@ -13,6 +13,13 @@ message Request {
   string group = 1;
   string key = 2;
 }
+message SetRequest {
+  string group = 1;
+  string key = 2;
+  bytes value = 3;
+  int64 expire = 4;
+}
+
 
 message Response {
   bytes value = 1;

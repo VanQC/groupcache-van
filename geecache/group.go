@@ -2,10 +2,12 @@ package geecache
 
 import (
 	"bytes"
+	"errors"
 	pb "geecache/geecachepb"
 	"geecache/singleflight"
 	"log"
 	"sync"
+	"time"
 )
 
 // Getter 回调。当缓存不存在时，调用这个函数，得到源数据
@@ -53,7 +55,14 @@ type Group struct {
 	// 此缓存谨慎使用，以最大化可全局存储的键值对总数。
 	hotCache cache
 
-	loader *singleflight.Set // 保证并发时相同请求只请求一次，返回相同结果
+	// 保证并发时相同请求只请求一次，返回相同结果
+	loadGroup *singleflight.Set
+
+	// 确保无论并发调用方的数量如何，仅远程添加一次key
+	setGroup *singleflight.Set
+
+	// 确保无论并发调用方的数量如何，仅远程移除一次key
+	removeGroup *singleflight.Set
 }
 
 var (
@@ -79,7 +88,9 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		// peers 通过调用 Get() 方法时执行一次
 		// mainCache 延迟实例化
 
-		loader: &singleflight.Set{},
+		loadGroup:   &singleflight.Set{},
+		setGroup:    &singleflight.Set{},
+		removeGroup: &singleflight.Set{},
 	}
 	groups[name] = gp
 	return gp
@@ -119,7 +130,7 @@ func (g *Group) Query(key string) (ByteView, error) {
 func (g *Group) load(key string) (ByteView, error) {
 	// 防止缓存击穿。并发查询请求只执行一次
 	// 确保了并发场景下针对相同的 key，load 过程只会调用一次
-	btView, err := g.loader.Do(key, func() (interface{}, error) {
+	btView, err := g.loadGroup.Do(key, func() (interface{}, error) {
 		// 再次查缓存
 		if value, cacheHit := g.lookupCache(key); cacheHit {
 			return value, nil
@@ -202,4 +213,128 @@ func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 			(&g.mainCache).removeOldest()
 		}
 	}
+}
+
+// Set 向对应节点的缓存中加入 key value
+func (g *Group) Set(key string, value []byte, expire time.Time, isHotCache bool) error {
+	g.peersOnce.Do(g.initPeers)
+
+	if key == "" {
+		return errors.New("empty Set() key not allowed")
+	}
+
+	_, err := g.setGroup.Do(key, func() (interface{}, error) {
+		// if remote peer owns this key
+		if peer, ok := g.peers.PickPeer(key); ok {
+			if err := g.setFromPeer(peer, key, value, expire); err != nil {
+				return nil, err
+			}
+			if isHotCache {
+				g.localSet(key, value, expire, &g.hotCache)
+			}
+			return nil, nil
+		}
+		// else we own this key
+		g.localSet(key, value, expire, &g.mainCache)
+		return nil, nil
+	})
+	return err
+}
+
+func (g *Group) setFromPeer(peer ProtoGetter, key string, value []byte, expire time.Time) error {
+	var e int64
+	if !expire.IsZero() {
+		e = expire.UnixNano()
+	}
+
+	req := &pb.SetRequest{
+		Group:  g.name,
+		Key:    key,
+		Value:  value,
+		Expire: e,
+	}
+	return peer.Set(req)
+}
+
+func (g *Group) localSet(key string, value []byte, expire time.Time, cache *cache) {
+	if g.cacheBytes <= 0 {
+		return
+	}
+	btv := ByteView{
+		b: value,
+		e: expire,
+	}
+	// 在g.loadGroup.Do() 执行期间，会进行缓存的增/改；在执行 localRemove 操作时也会进行缓存的删除，
+	// 加上这里的增加缓存操作，这三者之间不能与之并发进行，只有能获取到锁的一方才能执行，其他等待。
+	g.loadGroup.Lock(func() {
+		g.populateCache(key, btv, cache)
+	})
+}
+
+// Remove 向对应节点的缓存中移除 key value
+func (g *Group) Remove(key string) error {
+	g.peersOnce.Do(g.initPeers)
+	if key == "" {
+		return errors.New("empty Remove() key not allowed")
+	}
+
+	_, err := g.removeGroup.Do(key, func() (interface{}, error) {
+		// Remove from key owner first
+		owner, ok := g.peers.PickPeer(key)
+		if ok {
+			if err := g.removeFromPeer(key, owner); err != nil {
+				return nil, err
+			}
+		}
+		// Remove from our cache next
+		g.localRemove(key)
+
+		// 异步清除其他节点中所有的 hot and main caches
+		wg := sync.WaitGroup{}
+		errs := make(chan error)
+		for _, peer := range g.peers.GetAll() {
+			if peer == owner {
+				continue
+			}
+			wg.Add(1)
+			go func(peer ProtoGetter) {
+				errs <- g.removeFromPeer(key, peer)
+				wg.Done()
+			}(peer)
+		}
+		go func() {
+			wg.Wait()
+			close(errs)
+		}()
+		// TODO(thrawn01): Should we report all errors? Reporting context
+		//  cancelled error for each peer doesn't make much sense.
+		var err error
+		for e := range errs {
+			err = e
+		}
+		return nil, err
+	})
+	return err
+}
+
+func (g *Group) removeFromPeer(key string, peer ProtoGetter) error {
+	req := &pb.Request{
+		Group: g.name,
+		Key:   key,
+	}
+	return peer.Remove(req)
+}
+
+func (g *Group) localRemove(key string) {
+	// Clear key from our local cache
+	if g.cacheBytes <= 0 {
+		return
+	}
+
+	// 在g.loadGroup.Do() 执行期间，会进行缓存的增/改；在执行 localSet 操作时也会进行缓存的删除，
+	// 加上这里的删除缓存操作，这三者之间不能与之并发进行，只有能获取到锁的一方才能执行，其他等待。
+	g.loadGroup.Lock(func() {
+		g.hotCache.remove(key)
+		g.mainCache.remove(key)
+	})
 }

@@ -44,3 +44,10 @@ func (s *Set) Do(key string, fn func() (interface{}, error)) (interface{}, error
 
 	return c.val, c.err // 返回结果
 }
+
+// todo 这个很重要！
+func (s *Set) Lock(fn func()) {
+	s.mu.Lock()
+	fn()
+	s.mu.Unlock()
+}
