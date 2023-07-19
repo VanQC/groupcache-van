@@ -1,4 +1,6 @@
 # Geecachee_WQC
+
+## v1.0.0
 这一版是在极客兔兔的geecache基础上，根据 groupCache 项目源码改写而成。
 
 相较于 groupCache 项目源码做了适当简化：
