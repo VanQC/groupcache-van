@@ -191,8 +191,8 @@ func (g *Group) queryLocally(key string) (ByteView, error) {
 	if err != nil {
 		return ByteView{}, err
 	}
-	value := ByteView{bytes.Clone(b)}
-	g.populateCache(key, value, &g.mainCache) // 将获取到的源数据添加到缓存 mainCache 中
+	value := ByteView{bytes.Clone(b), time.Time{}} // 空结构体表示零值，默认不过期
+	g.populateCache(key, value, &g.mainCache)      // 将获取到的源数据添加到缓存 mainCache 中
 	return value, nil
 }
 
