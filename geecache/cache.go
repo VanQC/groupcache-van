@@ -6,7 +6,7 @@ import (
 )
 
 /*
-	cache 结构体：实例化 lru，封装 get 和 add 方法，
+	cache 结构体：实例化 lru，封装 get, add, remove 等方法，
 	并添加互斥锁 mu，实现的并发缓存
 */
 

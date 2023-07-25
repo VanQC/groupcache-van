@@ -1,4 +1,4 @@
-# Geecachee_WQC
+# Groupcache_WQC
 
 ## v1.0.0
 这一版是在极客兔兔的geecache基础上，根据 groupCache 项目源码改写而成。
@@ -18,3 +18,32 @@
 + 在 lru.go 中，查询缓存时检查是否过期，若过期则清除。
 + 提供设置缓存、移除缓存的方法调用。
 + 在删除缓存时，除了删除key所在节点的mainCache，还要删除其余所有节点中的hotCache
+
+## v1.0.2
+这版在 v1.0.1 的基础上进行了较大改动，将节点间的服务由基于 http 服务，改为基于 grpc 服务，并使用 etcd 进行服务注册。
+
+### 具体改动：
++ 新增 register.go 用于向 etcd 进行服务注册；
++ server.go 文件实现了原 http.go 中的功能，将服务由 http 更改为基于 grpc；
++ 在 .proto 文件中新增 Put 和 Delete 服务；
++ 将节点 client 从 server.go 中独立到 client.go，方便阅读；
++ 删除 sink.go文件，因为本项目为简化没有使用池化技术
+
+### TODO
++ 项目中增加了过期策略，但是未实现过期立刻删除的功能，只要被查询时才会判断是否过期，从而进行删除
+
+### 项目启动&测试
+main.go 中定义了一个简单的api访问，便于进行查询测试
+在三个命令行窗口执行以下命令，启动三个节点进行服务
+```cmd
+    go run main.go -api=1
+    go run main.go -port=8002
+    go run main.go -port=8003
+    
+    # 测试样例：
+    http://localhost:9999/get?key=tom
+    http://localhost:9999/set
+    http://localhost:9999/remove?key=tom
+    ......
+    （可自行进行相关查询、新增、删除）
+```

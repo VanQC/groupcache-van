@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/empty.proto";
+
 package geecachepb;
 
 option go_package = "./;geecachepb";
@@ -27,4 +29,6 @@ message Response {
 
 service GroupCache {
   rpc Get(Request) returns (Response);
+  rpc Put(SetRequest) returns (google.protobuf.Empty);
+  rpc Delete(Request) returns (google.protobuf.Empty);
 }

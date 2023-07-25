@@ -138,9 +138,9 @@ func (g *Group) load(key string) (ByteView, error) {
 		// 查远程节点，若存在的话。
 		if g.peers != nil {
 			if peer, ok := g.peers.PickPeer(key); ok {
-				log.Println("cache not hit, get from peer")
+				log.Printf("cache not hit, get from peer--[%v]\n", peer.(*client).name)
 				if value, err := g.getFromPeer(peer, key); err == nil {
-					log.Println("从远程节点成功获取数据")
+					log.Printf("从远程节点[%v]成功获取数据", peer.(*client).name)
 					return value, nil
 				}
 			}
@@ -218,7 +218,6 @@ func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 // Set 向对应节点的缓存中加入 key value
 func (g *Group) Set(key string, value []byte, expire time.Time, isHotCache bool) error {
 	g.peersOnce.Do(g.initPeers)
-
 	if key == "" {
 		return errors.New("empty Set() key not allowed")
 	}
